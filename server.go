@@ -1,11 +1,12 @@
 package main
 
 import (
+	"net"
+
 	// format handling
 	"bufio"
 	"fmt"
 	"log"
-	"net"
 
 	// system handling
 	"os"
@@ -40,9 +41,7 @@ func NewTCPServer(addr string, maxUser int) (server *TCPServer, err error) {
 	}, nil
 }
 
-func (s *TCPServer) ListenAndAccept(addr string) error {
-	s.conns = make(map[string]net.Conn) // create user maps
-
+func (s *TCPServer) Listen() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM) // initiate context for futures goroutines
 
 	defer stop() // Stop when function is returning
@@ -69,9 +68,9 @@ func (s *TCPServer) ListenAndAccept(addr string) error {
 					s.conns[RemoteAddr(conn)] = conn
 					s.mx.Unlock()
 
-					go s.HandleConn(conn)
+					go s.handleConn(conn, ctx)
 				} else {
-					fmt.Fprintln(conn, "This server does not allow connections currently")
+					fmt.Fprintln(conn, "This server does not currently allow connections")
 					conn.Close()
 				}
 			}
@@ -83,7 +82,7 @@ func (s *TCPServer) ListenAndAccept(addr string) error {
 	return nil
 }
 
-func (s *TCPServer) HandleConn(conn net.Conn) {
+func (s *TCPServer) handleConn(conn net.Conn, parentCtx context.Context) {
 	defer func() {
 		delete(s.conns, RemoteAddr(conn))
 		conn.Close()
@@ -92,19 +91,25 @@ func (s *TCPServer) HandleConn(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 
 	for {
-		msg, err := reader.ReadString('\n')
-		if err != nil {
+		select {
+		case <-parentCtx.Done():
 			return
-		}
-		msg = msg[:len(msg)-1]
 
-		s.Logger.Printf("[%s] %s", conn.RemoteAddr().String(), msg)
-
-		for _, c := range s.conns {
-			if RemoteAddr(c) == RemoteAddr(conn) {
-				continue
+		default:
+			msg, err := reader.ReadString('\n')
+			if err != nil {
+				return
 			}
-			fmt.Fprintf(c, "%s -> %s", RemoteAddr(conn), msg)
+			msg = msg[:len(msg)-1]
+
+			s.Logger.Printf("[%s] %s\n", conn.RemoteAddr().String(), msg)
+
+			for _, c := range s.conns {
+				if RemoteAddr(c) == RemoteAddr(conn) {
+					continue
+				}
+				fmt.Fprintf(c, "%s -> %s", RemoteAddr(conn), msg)
+			}
 		}
 	}
 }
