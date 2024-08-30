@@ -19,7 +19,7 @@ func main() {
 			log.Fatalln(err)
 		}
 
-		err = server.Host(os.Args[2])
+		err = server.ListenAndAccept(os.Args[2])
 		if err != nil {
 			log.Fatalln(err)
 		}

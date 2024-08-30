@@ -1,16 +1,20 @@
 package main
 
 import (
+	// format handling
+	"bufio"
 	"fmt"
 	"log"
-	"os"
-
-	"bufio"
-	"context"
 	"net"
+
+	// system handling
+	"os"
 	"os/signal"
-	"sync"
 	"syscall"
+
+	// async handling
+	"context"
+	"sync"
 )
 
 type TCPServer struct {
@@ -36,7 +40,7 @@ func NewTCPServer(addr string, maxUser int) (server *TCPServer, err error) {
 	}, nil
 }
 
-func (s *TCPServer) Host(addr string) error {
+func (s *TCPServer) ListenAndAccept(addr string) error {
 	s.conns = make(map[string]net.Conn) // create user maps
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM) // initiate context for futures goroutines
@@ -56,36 +60,36 @@ func (s *TCPServer) Host(addr string) error {
 				return
 
 			default:
-				if len(s.conns) <= s.MaxUser {
-					conn, err := ln.Accept()
-					if err != nil {
-						continue
-					}
+				conn, err := ln.Accept()
+				if err != nil {
+					continue
+				}
+				if len(s.conns) < s.MaxUser {
+					s.mx.Lock()
+					s.conns[RemoteAddr(conn)] = conn
+					s.mx.Unlock()
+
 					go s.HandleConn(conn)
+				} else {
+					fmt.Fprintln(conn, "This server does not allow connections currently")
+					conn.Close()
 				}
 			}
 		}
 	}()
 
 	<-ctx.Done() // Wait for shutdown signals
-	fmt.Println("\nGracefully shutting down...")
+	s.Logger.Println("\nGracefully shutting down...")
 	return nil
 }
 
 func (s *TCPServer) HandleConn(conn net.Conn) {
-	s.mx.Lock()
-	s.conns[RemoteAddr(conn)] = conn // insert the
-	s.mx.Unlock()
-
 	defer func() {
 		delete(s.conns, RemoteAddr(conn))
 		conn.Close()
 	}()
 
-	reader := bufio.NewReadWriter(
-		bufio.NewReader(conn),
-		bufio.NewWriter(conn),
-	)
+	reader := bufio.NewReader(conn)
 
 	for {
 		msg, err := reader.ReadString('\n')
@@ -94,7 +98,14 @@ func (s *TCPServer) HandleConn(conn net.Conn) {
 		}
 		msg = msg[:len(msg)-1]
 
-		s.Logger.Printf("[%s] %s", conn.LocalAddr().String(), msg)
+		s.Logger.Printf("[%s] %s", conn.RemoteAddr().String(), msg)
+
+		for _, c := range s.conns {
+			if RemoteAddr(c) == RemoteAddr(conn) {
+				continue
+			}
+			fmt.Fprintf(c, "%s -> %s", RemoteAddr(conn), msg)
+		}
 	}
 }
 
